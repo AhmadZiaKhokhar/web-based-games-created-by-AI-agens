@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Sky Isles — Random Adventurer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#0b1026; touch-action:none;
+    font-family:'Segoe UI', system-ui, sans-serif; user-select:none; -webkit-user-select:none; }
+  #game { position:fixed; inset:0; display:block; }
+
+  /* ---------- HUD ---------- */
+  #hud { position:fixed; top:10px; left:0; right:0; display:flex; justify-content:center; gap:14px;
+    pointer-events:none; z-index:10; }
+  .pill { background:rgba(10,14,40,.55); border:1px solid rgba(140,170,255,.35); color:#eaf0ff;
+    padding:7px 16px; border-radius:999px; font-weight:700; font-size:15px; backdrop-filter:blur(6px);
+    text-shadow:0 1px 3px #000; }
+  #hearts { letter-spacing:2px; }
+  #mute { position:fixed; top:10px; right:10px; z-index:20; pointer-events:auto; cursor:pointer;
+    background:rgba(10,14,40,.55); border:1px solid rgba(140,170,255,.35); color:#fff; border-radius:50%;
+    width:42px; height:42px; font-size:18px; }
+
+  /* ---------- Touch controls ---------- */
+  #stick { position:fixed; left:22px; bottom:26px; width:130px; height:130px; border-radius:50%;
+    background:rgba(120,150,255,.12); border:2px solid rgba(160,190,255,.4); z-index:15; display:none; }
+  #knob { position:absolute; left:50%; top:50%; width:54px; height:54px; border-radius:50%;
+    background:rgba(170,200,255,.45); border:2px solid rgba(220,235,255,.7); transform:translate(-50%,-50%); }
+  #jumpBtn { position:fixed; right:26px; bottom:34px; width:92px; height:92px; border-radius:50%; z-index:15;
+    display:none; align-items:center; justify-content:center; font-size:34px; color:#fff;
+    background:radial-gradient(circle at 35% 30%, rgba(255,190,90,.85), rgba(255,110,60,.75));
+    border:3px solid rgba(255,235,200,.8); box-shadow:0 4px 18px rgba(255,120,50,.45); }
+  .touch #stick, .touch #jumpBtn { display:flex; }
+
+  /* ---------- Overlays ---------- */
+  .overlay { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; z-index:30; text-align:center; padding:20px;
+    background:radial-gradient(ellipse at center, rgba(20,28,70,.82), rgba(5,8,24,.94)); color:#eaf0ff; }
+  .overlay h1 { font-size:clamp(34px,8vw,64px); letter-spacing:2px;
+    background:linear-gradient(180deg,#ffe9a8,#ff9d5c); -webkit-background-clip:text; background-clip:text;
+    -webkit-text-fill-color:transparent; margin-bottom:6px; }
+  .overlay h2 { font-size:clamp(18px,4vw,26px); color:#9fd0ff; margin-bottom:18px; font-weight:600; }
+  .overlay p  { max-width:520px; line-height:1.55; color:#c4d3f5; margin-bottom:22px; font-size:clamp(14px,3.4vw,17px); }
+  .card { background:rgba(255,255,255,.06); border:1px solid rgba(160,190,255,.3); border-radius:16px;
+    padding:14px 22px; margin-bottom:22px; }
+  .bigbtn { pointer-events:auto; cursor:pointer; font-size:clamp(18px,4.5vw,24px); font-weight:800;
+    color:#241505; padding:14px 44px; border:none; border-radius:999px;
+    background:linear-gradient(180deg,#ffd97a,#ff8f4d); box-shadow:0 6px 24px rgba(255,150,60,.5);
+    transition:transform .12s; }
+  .bigbtn:active { transform:scale(.94); }
+  #finalScore { font-size:clamp(26px,6vw,40px); font-weight:800; color:#ffe9a8; margin-bottom:4px; }
+  .hidden { display:none !important; }
+  kbd { background:#26305e; border-radius:6px; padding:2px 8px; border:1px solid #4a5aa0; font-size:.9em; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div class="pill" id="hearts">❤️❤️❤️</div>
+  <div class="pill" id="score">🏃 0</div>
+  <div class="pill" id="gems">💎 0</div>
+</div>
+<button id="mute">🔊</button>
+
+<div id="stick"><div id="knob"></div></div>
+<div id="jumpBtn">⬆</div>
+
+<div class="overlay" id="startScreen">
+  <h1>SKY ISLES</h1>
+  <h2 id="charIntro">Your random adventurer awaits…</h2>
+  <div class="card" id="charCard"></div>
+  <p id="howTo">Every run you get a <b>random adventurer</b>. Sprint across floating islands,
+    grab 💎 crystals, dodge 🔺 spike slugs — don't fall into the void!
+    <br><br>🖥️ <kbd>A</kbd>/<kbd>D</kbd> steer · <kbd>Space</kbd> jump (double-jump!)<br>
+    📱 Left joystick steers · orange button jumps</p>
+  <button class="bigbtn" id="startBtn">▶ START ADVENTURE</button>
+</div>
+
+<div class="overlay hidden" id="gameOverScreen">
+  <h1>WIPEOUT!</h1>
+  <div id="finalScore">0</div>
+  <p id="finalGems" style="margin-bottom:26px"></p>
+  <button class="bigbtn" id="retryBtn">🎲 NEW RANDOM ADVENTURER</button>
+</div>
+
+<script>
+/* ============================================================
+   SKY ISLES — a random-character 3D endless island runner
+   ============================================================ */
+const IS_TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+if (IS_TOUCH) document.body.classList.add('touch');
+
+const canvas   = document.getElementById('game');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87b8e8);
+scene.fog = new THREE.Fog(0x87b8e8, 30, 95);
+
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, .1, 300);
+
+/* ---------- Lights ---------- */
+scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x4a3b63, .95));
+const sun = new THREE.DirectionalLight(0xfff2d8, 1.15);
+sun.position.set(6, 14, 6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left=-25; sun.shadow.camera.right=25;
+sun.shadow.camera.top=25;  sun.shadow.camera.bottom=-25;
+sun.shadow.camera.far = 60;
+scene.add(sun);
+
+/* ============================================================
+   RANDOM CHARACTER FACTORY
+   ============================================================ */
+const rnd = (a,b)=>a+Math.random()*(b-a);
+const pick = arr => arr[Math.floor(Math.random()*arr.length)];
+const PALETTES = [
+  [0xff6b6b,0xf7d794],[0x48dbfb,0x1dd1a1],[0xf368e0,0xff9f43],
+  [0x54a0ff,0x5f27cd],[0x00d2d3,0xffdd59],[0xff6348,0x2ed573],
+  [0xa29bfe,0xfd79a8],[0xffeaa7,0x6c5ce7],[0x55efc4,0xe17055],[0xd63031,0x00cec9]
+];
+const NAMES = ['Zippy','Bramble','Noodle','Cpt. Wobble','Pip','Sir Bounce','Momo','Tumble','Juno',
+  'Fizz','Gobble','Nova','Peanut','Zigzag','Clover','Biscuit','Rocket','Mango','Dizzy','Ember'];
+const TITLES = ['the Bold','the Sleepy','of the Clouds','the Unlucky','the Swift','the Hungry',
+  'the Fabulous','the Mysterious','the Loud','the Squishy'];
+
+function makeTextSprite(text){
+  const c = document.createElement('canvas'); c.width=512; c.height=128;
+  const g = c.getContext('2d');
+  g.font = 'bold 58px Segoe UI, sans-serif'; g.textAlign='center'; g.textBaseline='middle';
+  g.lineWidth = 10; g.strokeStyle='rgba(10,14,40,.85)'; g.strokeText(text,256,64);
+  g.fillStyle='#fff'; g.fillText(text,256,64);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map:new THREE.CanvasTexture(c), transparent:true }));
+  sp.scale.set(3.4,.85,1); sp.position.y = 2.6;
+  return sp;
+}
+
+function createCharacter(){
+  const [main, accent] = pick(PALETTES);
+  const mMain = new THREE.MeshStandardMaterial({ color:main, roughness:.55 });
+  const mAcc  = new THREE.MeshStandardMaterial({ color:accent, roughness:.4 });
+
+  const g = new THREE.Group();
+
+  // body (random chubbiness)
+  const bodyType = pick(['capsule','box','sphere']);
+  let body;
+  if (bodyType==='capsule'){
+    body = new THREE.Mesh(new THREE.CylinderGeometry(.42,.5,.8,16), mMain);
+    body.position.y=.65;
+  } else if (bodyType==='box'){
+    body = new THREE.Mesh(new THREE.BoxGeometry(.85,.85,.7), mMain);
+    body.position.y=.65;
+  } else {
+    body = new THREE.Mesh(new THREE.SphereGeometry(.55,20,16), mMain);
+    body.position.y=.7; body.scale.y=1.15;
+  }
+  body.castShadow = true; g.add(body);
+
+  // head
+  const headRound = Math.random()<.6;
+  const head = headRound
+    ? new THREE.Mesh(new THREE.SphereGeometry(.42,20,16), mAcc)
+    : new THREE.Mesh(new THREE.BoxGeometry(.7,.7,.7), mAcc);
+  head.position.y = 1.55; head.castShadow = true; g.add(head);
+
+  // eyes
+  const eyeMat = new THREE.MeshBasicMaterial({color:0x1b1b2f});
+  [-0.16,0.16].forEach(x=>{
+    const e = new THREE.Mesh(new THREE.SphereGeometry(.07,8,8), eyeMat);
+    e.position.set(x,1.6,.36); g.add(e);
+  });
+
+  // accessory
+  const acc = pick(['cone','ring','antenna','cap','none']);
+  if (acc==='cone'){
+    const h = new THREE.Mesh(new THREE.ConeGeometry(.32,.7,12), mMain);
+    h.position.y=2.1; h.rotation.z=rnd(-.25,.25); h.castShadow=true; g.add(h);
+  } else if (acc==='ring'){
+    const r = new THREE.Mesh(new THREE.TorusGeometry(.34,.07,10,24), mAcc);
+    r.position.y=2.0; r.rotation.x=Math.PI/2.3; g.add(r);
+  } else if (acc==='antenna'){
+    const st = new THREE.Mesh(new THREE.CylinderGeometry(.03,.03,.5,6), mAcc);
+    st.position.y=2.05; g.add(st);
+    const b = new THREE.Mesh(new THREE.SphereGeometry(.12,10,8),
+      new THREE.MeshBasicMaterial({color:0xffe066}));
+    b.position.y=2.35; g.add(b); g.userData.blink=b;
+  } else if (acc==='cap'){
+    const c = new THREE.Mesh(new THREE.CylinderGeometry(.4,.45,.18,14), mMain);
+    c.position.y=1.9; g.add(c);
+  }
+
+  // little feet
+  [-0.25,0.25].forEach(x=>{
+    const f = new THREE.Mesh(new THREE.SphereGeometry(.16,10,8), mAcc);
+    f.position.set(x,.12,.08); f.castShadow=true; g.add(f);
+  });
+
+  const fullName = pick(NAMES)+' '+pick(TITLES);
+  g.add(makeTextSprite(fullName));
+  return { group:g, name:fullName };
+}
+
+/* ============================================================
+   WORLD
+   ============================================================ */
+const platMat  = new THREE.MeshStandardMaterial({ color:0x6ab04c, roughness:.9 });
+const sideMat  = new THREE.MeshStandardMaterial({ color:0x8d6e4a, roughness:1 });
+const gemMat   = new THREE.MeshStandardMaterial({ color:0x4ef0e0, emissive:0x0e8f86,
+                   emissiveIntensity:.9, roughness:.15, metalness:.4 });
+const spikeMat = new THREE.MeshStandardMaterial({ color:0xd63031, roughness:.4 });
+
+const platforms=[], obstacles=[], gems=[], clouds=[], particles=[];
+
+function addPlatform(z, y){
+  const w = rnd(5.5,9), len = rnd(7,13);
+  const geo = new THREE.BoxGeometry(w, 1.6, len);
+  const mesh = new THREE.Mesh(geo, [sideMat,sideMat,platMat,sideMat,sideMat,sideMat]);
+  mesh.position.set(rnd(-2.5,2.5), y-.8, z);
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  const p = { mesh, w, len, top:y };
+  platforms.push(p);
+
+  // decorations: gems & spikes
+  const nGem = Math.floor(rnd(1,4));
+  for(let i=0;i<nGem;i++){
+    const gm = new THREE.Mesh(new THREE.OctahedronGeometry(.32), gemMat);
+    gm.position.set(mesh.position.x + rnd(-w/2+1,w/2-1), y+1.1, z + rnd(-len/2+1,len/2-1));
+    gm.castShadow=true; scene.add(gm);
+    gems.push({ mesh:gm, taken:false });
+  }
+  if (Math.random()<.55){
+    const s = new THREE.Group();
+    for(let k=0;k<3;k++){
+      const c = new THREE.Mesh(new THREE.ConeGeometry(.28,.75,8), spikeMat);
+      c.position.set((k-1)*.5, .38, 0); c.castShadow=true; s.add(c);
+    }
+    s.position.set(mesh.position.x + rnd(-w/2+1.2,w/2-1.2), y, z + rnd(-len/2+1.2,len/2-1.2));
+    scene.add(s);
+    obstacles.push({ mesh:s, r:.85 });
+  }
+  return p;
+}
+
+function addCloud(){
+  const cl = new THREE.Group();
+  const m = new THREE.MeshStandardMaterial({color:0xffffff, roughness:1, transparent:true, opacity:.92});
+  for(let i=0;i<4;i++){
+    const s = new THREE.Mesh(new THREE.SphereGeometry(rnd(.9,1.8),10,8), m);
+    s.position.set(rnd(-1.6,1.6), rnd(-.3,.3), rnd(-1,1));
+    cl.add(s);
+  }
+  cl.position.set(rnd(-30,30), rnd(4,14), rnd(-80,-20));
+  scene.add(cl); clouds.push(cl);
+}
+for(let i=0;i<14;i++) addCloud();
+
+/* distant floating rocks for depth */
+const rockMat = new THREE.MeshStandardMaterial({color:0x7a6a8f, roughness:1});
+for(let i=0;i<10;i++){
+  const r = new THREE.Mesh(new THREE.DodecahedronGeometry(rnd(1.5,4)), rockMat);
+  r.position.set(rnd(-40,40), rnd(-6,10), rnd(-120,-40));
+  r.rotation.set(rnd(0,3),rnd(0,3),0);
+  scene.add(r);
+}
+
+/* ============================================================
+   GAME STATE
+   ============================================================ */
+let state='menu';           // menu | play | over
+let player, playerName;
+let speed=12, score=0, gemCount=0, hearts=3, dist=0;
+let velY=0, onGround=false, jumps=0, invincible=0, shake=0;
+let nextZ=0, nextY=0, lastSafe=null, runTime=0;
+const GRAV=-30, JUMPV=11.5;
+const keys={};
+let joyX=0;
+
+function buildTrack(){
+  platforms.forEach(p=>scene.remove(p.mesh));
+  gems.forEach(g=>scene.remove(g.mesh));
+  obstacles.forEach(o=>scene.remove(o.mesh));
+  platforms.length=obstacles.length=gems.length=0;
+  nextZ=0; nextY=0;
+  addPlatform(0, 0);            // starting island (extra wide)
+  platforms[0].mesh.scale.x = 1.6;
+  nextZ=-14;
+  for(let i=0;i<12;i++) spawnNext();
+}
+function spawnNext(){
+  nextY = THREE.MathUtils.clamp(nextY + rnd(-1.6,1.6), -2.5, 3);
+  addPlatform(nextZ, nextY);
+  nextZ -= rnd(9,13);
+}
+
+/* particles */
+function burst(pos, color, n=14){
+  for(let i=0;i<n;i++){
+    const p = new THREE.Mesh(new THREE.SphereGeometry(.09,6,6),
+      new THREE.MeshBasicMaterial({color, transparent:true}));
+    p.position.copy(pos);
+    p.userData.v = new THREE.Vector3(rnd(-4,4), rnd(2,7), rnd(-4,4));
+    p.userData.life = 1;
+    scene.add(p); particles.push(p);
+  }
+}
+
+/* tiny synth sounds */
+let actx=null, muted=false;
+function sfx(freq, dur=.12, type='square', vol=.12){
+  if (muted) return;
+  try{
+    actx = actx || new (window.AudioContext||window.webkitAudioContext)();
+    const o=actx.createOscillator(), g=actx.createGain();
+    o.type=type; o.frequency.value=freq;
+    g.gain.setValueAtTime(vol, actx.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001, actx.currentTime+dur);
+    o.connect(g).connect(actx.destination);
+    o.start(); o.stop(actx.currentTime+dur);
+  }catch(e){}
+}
+
+/* ============================================================
+   INPUT — keyboard + touch
+   ============================================================ */
+addEventListener('keydown', e=>{
+  keys[e.code]=true;
+  if((e.code==='Space'||e.code==='ArrowUp') && state==='play'){ e.preventDefault(); doJump(); }
+});
+addEventListener('keyup', e=> keys[e.code]=false);
+
+const stick=document.getElementById('stick'), knob=document.getElementById('knob');
+let stickId=null, stickCX=0;
+stick.addEventListener('pointerdown', e=>{
+  stickId=e.pointerId; stick.setPointerCapture(e.pointerId);
+  const r=stick.getBoundingClientRect(); stickCX=r.left+r.width/2;
+});
+stick.addEventListener('pointermove', e=>{
+  if(e.pointerId!==stickId) return;
+  const r=stick.getBoundingClientRect();
+  let dx=(e.clientX-(r.left+r.width/2))/(r.width/2);
+  dx=THREE.MathUtils.clamp(dx,-1,1); joyX=dx;
+  knob.style.transform=`translate(calc(-50% + ${dx*36}px), -50%)`;
+});
+const endStick=e=>{ if(e.pointerId===stickId){ stickId=null; joyX=0;
+  knob.style.transform='translate(-50%,-50%)'; } };
+stick.addEventListener('pointerup',endStick); stick.addEventListener('pointercancel',endStick);
+
+const jumpBtn=document.getElementById('jumpBtn');
+jumpBtn.addEventListener('pointerdown', e=>{ e.preventDefault(); if(state==='play') doJump(); });
+
+document.getElementById('mute').onclick = function(){ muted=!muted; this.textContent = muted?'🔇':'🔊'; };
+
+function doJump(){
+  if(onGround){ velY=JUMPV; onGround=false; jumps=1; sfx(300,.12,'sine'); }
+  else if(jumps<2){ velY=JUMPV*.92; jumps=2; sfx(430,.14,'sine');
+    burst(player.position.clone().add(new THREE.Vector3(0,-.6,0)), 0xffffff, 8); }
+}
+
+/* ============================================================
+   RUN LIFECYCLE
+   ============================================================ */
+function startRun(){
+  if (player) scene.remove(player);
+  const c = createCharacter();
+  player = c.group; playerName = c.name;
+  scene.add(player);
+  speed=12; score=0; gemCount=0; hearts=3; dist=0; velY=0; runTime=0;
+  invincible=0; jumps=0; onGround=true;
+  buildTrack();
+  player.position.set(0,0,0);
+  lastSafe = platforms[0];
+  state='play';
+  document.getElementById('startScreen').classList.add('hidden');
+  document.getElementById('gameOverScreen').classList.add('hidden');
+  updateHUD();
+}
+
+function hitObstacle(o){
+  hearts--; invincible=1.6; shake=.5;
+  burst(o.mesh.position.clone().add(new THREE.Vector3(0,.5,0)), 0xff5040, 18);
+  scene.remove(o.mesh);
+  obstacles.splice(obstacles.indexOf(o),1);
+  sfx(110,.3,'sawtooth',.2);
+  updateHUD();
+  if(hearts<=0) endRun();
+}
+function fall(){
+  hearts--; sfx(180,.25,'triangle'); updateHUD();
+  if(hearts<=0){ endRun(); return; }
+  // respawn on last safe platform
+  player.position.set(lastSafe.mesh.position.x, lastSafe.top, lastSafe.mesh.position.z + lastSafe.len/2 - 1);
+  velY=0; invincible=1.5;
+}
+function endRun(){
+  state='over';
+  document.getElementById('finalScore').textContent = '🏃 '+Math.floor(score);
+  document.getElementById('finalGems').innerHTML = '💎 '+gemCount+' crystals collected<br><br>Your adventurer was <b>'
+    +playerName+'</b>';
+  document.getElementById('gameOverScreen').classList.remove('hidden');
+}
+
+document.getElementById('startBtn').onclick = startRun;
+document.getElementById('retryBtn').onclick = startRun;
+
+function updateHUD(){
+  document.getElementById('hearts').textContent = '❤️'.repeat(hearts)+'🖤'.repeat(Math.max(0,3-hearts));
+  document.getElementById('score').textContent = '🏃 '+Math.floor(score);
+  document.getElementById('gems').textContent = '💎 '+gemCount;
+}
+
+/* ============================================================
+   MAIN LOOP
+   ============================================================ */
+const clock = new THREE.Clock();
+let camPos = new THREE.Vector3(0,4,9);
+
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), .05);
+  const t = clock.elapsedTime;
+
+  if (state==='play'){
+    runTime += dt;
+    speed = Math.min(12 + runTime*.25, 30);
+    dist  += speed*dt;
+    score += speed*dt*.6;
+
+    /* steer */
+    let steer = 0;
+    if(keys['KeyA']||keys['ArrowLeft']) steer -= 1;
+    if(keys['KeyD']||keys['ArrowRight']) steer += 1;
+    steer += joyX;
+    player.position.x = THREE.MathUtils.clamp(player.position.x + steer*9*dt, -9, 9);
+
+    /* forward auto-run */
+    player.position.z -= speed*dt;
+
+    /* gravity & landing */
+    velY += GRAV*dt;
+    player.position.y += velY*dt;
+    onGround=false;
+    let best=null;
+    for(const p of platforms){
+      const dx=Math.abs(player.position.x-p.mesh.position.x), dz=Math.abs(player.position.z-p.mesh.position.z);
+      if(dx<p.w/2+.35 && dz<p.len/2+.35){
+        if(player.position.y<=p.top+.05 && player.position.y>p.top-1.2 && velY<=0){
+          if(!best||p.top>best.top) best=p;
+        }
+      }
+    }
+    if(best){
+      player.position.y=best.top; velY=0; onGround=true; jumps=0;
+      lastSafe=best;
+      /* recycle track */
+      if(player.position.z < best.mesh.position.z - best.len/2 - 4) fall();
+    }
+    if(player.position.y < -14) fall();
+
+    /* cull + spawn platforms */
+    for(let i=platforms.length-1;i>=0;i--){
+      const p=platforms[i];
+      if(p.mesh.position.z > player.position.z + 30){
+        scene.remove(p.mesh); platforms.splice(i,1);
+        gems.forEach(g=>{ if(Math.abs(g.mesh.position.z-p.mesh.position.z)<p.len) { scene.remove(g.mesh); g.taken=true; }});
+        obstacles.forEach(o=>{ if(Math.abs(o.mesh.position.z-p.mesh.position.z)<p.len){ scene.remove(o.mesh); obstacles.splice(obstacles.indexOf(o),1);} });
+        spawnNext();
+      }
+    }
+
+    /* collisions: gems */
+    for(const g of gems){
+      if(g.taken) continue;
+      g.mesh.rotation.y += dt*3;
+      g.mesh.position.y += Math.sin(t*3+g.mesh.position.z)*dt*.25;
+      if(g.mesh.position.distanceTo(player.position.clone().add(new THREE.Vector3(0,1,0))) < 1.05){
+        g.taken=true; scene.remove(g.mesh); gemCount++; score+=25;
+        burst(g.mesh.position, 0x4ef0e0, 12); sfx(900,.1,'sine',.1);
+        updateHUD();
+      }
+    }
+
+    /* collisions: spikes */
+    if(invincible<=0){
+      for(const o of obstacles){
+        const d=o.mesh.position.distanceTo(player.position.clone().add(new THREE.Vector3(0,.5,0)));
+        if(d < o.r+.5){ hitObstacle(o); break; }
+      }
+    } else invincible -= dt;
+
+    /* run bounce + tilt */
+    const bob = onGround ? Math.abs(Math.sin(t*14))*.12 : 0;
+    player.children[0].position.y = .65 + bob;
+    player.rotation.z = -steer*.25;
+    player.rotation.x = onGround ? 0 : Math.min(.4, -velY*.02);
+    if(player.userData.blink) player.userData.blink.material.color.setHSL((t*.5)%1,.9,.6);
+    /* invincibility blink */
+    player.visible = invincible>0 ? (Math.floor(t*10)%2===0) : true;
+
+    score += 0; // keep
+    shake = Math.max(0, shake-dt);
+  }
+
+  /* ambient life */
+  clouds.forEach(c=>{ c.position.x += dt*.4; if(c.position.x>35) c.position.x=-35; });
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.userData.life-=dt*1.6;
+    p.userData.v.y += GRAV*.4*dt;
+    p.position.addScaledVector(p.userData.v,dt);
+    p.material.opacity=Math.max(0,p.userData.life);
+    if(p.userData.life<=0){ scene.remove(p); particles.splice(i,1); }
+  }
+
+  /* camera */
+  if(player){
+    const target=new THREE.Vector3(player.position.x*.6, player.position.y+3.6, player.position.z+8.5);
+    camPos.lerp(target, 1-Math.pow(.001,dt));
+    camera.position.copy(camPos);
+    if(shake>0){ camera.position.x += rnd(-1,1)*shake*.4; camera.position.y += rnd(-1,1)*shake*.4; }
+    camera.lookAt(player.position.x*.8, player.position.y+1.2, player.position.z-6);
+    sun.position.set(player.position.x+6, player.position.y+14, player.position.z+6);
+    sun.target.position.copy(player.position); sun.target.updateMatrixWorld();
+  } else {
+    camera.position.set(Math.sin(t*.15)*10, 5, Math.cos(t*.15)*10);
+    camera.lookAt(0,1,0);
+  }
+
+  renderer.render(scene,camera);
+}
+
+/* preview the character on the menu screen */
+function previewChar(){
+  if(player) scene.remove(player);
+  const c=createCharacter(); player=c.group; playerName=c.name;
+  player.position.set(0,0,0); scene.add(player);
+  document.getElementById('charIntro').textContent='🎲 Meet your adventurer…';
+  document.getElementById('charCard').innerHTML='⭐ <b style="font-size:20px">'+c.name+'</b> ⭐<br><span style="font-size:13px;color:#9fb4e8">A new random hero every run!</span>';
+}
+previewChar();
+setInterval(()=>{ if(state==='menu') previewChar(); }, 3500);
+
+addEventListener('resize', ()=>{
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+animate();
+</script>
+</body>
+</html>

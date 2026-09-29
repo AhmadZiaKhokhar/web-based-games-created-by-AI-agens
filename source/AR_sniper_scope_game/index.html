@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AR Sniper Scope Prototype</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            margin: 0;
+            padding: 0;
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: sans-serif;
+        }
+
+        /* Live Camera Background */
+        #camera-feed {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
+        }
+
+        /* 3D WebGL Canvas Overlay */
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        /* Sniper Scope UI */
+        #scope-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 3;
+            pointer-events: none;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* Outer Reticle Ring */
+        .reticle {
+            width: 220px;
+            height: 220px;
+            border: 3px solid rgba(255, 255, 255, 0.6);
+            border-radius: 50%;
+            position: relative;
+            box-shadow: 0 0 0 2000px rgba(0, 0, 0, 0.4);
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        /* Crosshairs */
+        .reticle::before, .reticle::after {
+            content: '';
+            position: absolute;
+            background: rgba(255, 255, 255, 0.6);
+            transition: background 0.2s ease;
+        }
+        .reticle::before {
+            top: 50%;
+            left: -20px;
+            right: -20px;
+            height: 2px;
+            transform: translateY(-50%);
+        }
+        .reticle::after {
+            left: 50%;
+            top: -20px;
+            bottom: -20px;
+            width: 2px;
+            transform: translateX(-50%);
+        }
+
+        /* Lock-On Active State */
+        .reticle.locked {
+            border-color: #ff3333;
+            box-shadow: 0 0 15px rgba(255, 51, 51, 0.8), 0 0 0 2000px rgba(0, 0, 0, 0.5);
+        }
+        .reticle.locked::before, .reticle.locked::after {
+            background: #ff3333;
+        }
+
+        /* Red Laser Center Dot */
+        #laser-dot {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background-color: #ff0000;
+            border-radius: 50%;
+            box-shadow: 0 0 8px #ff0000;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+        }
+        #laser-dot.active {
+            opacity: 1;
+        }
+
+        /* HUD Info */
+        #hud {
+            position: absolute;
+            top: 20px;
+            width: 100%;
+            text-align: center;
+            color: #fff;
+            font-size: 14px;
+            z-index: 4;
+            letter-spacing: 1px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        }
+
+        /* Start Overlay (Required for iOS Permissions) */
+        #start-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            text-align: center;
+            padding: 20px;
+        }
+        #start-btn {
+            margin-top: 20px;
+            padding: 14px 32px;
+            font-size: 18px;
+            background: #ff3333;
+            color: #fff;
+            border: none;
+            border-radius: 30px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+    </style>
+
+    <!-- Three.js Library & DeviceOrientationControls -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <!-- Camera Video Feed -->
+    <video id="camera-feed" autoplay playsinline muted></video>
+
+    <!-- Three.js Canvas Container -->
+    <div id="canvas-container"></div>
+
+    <!-- HUD Overlay -->
+    <div id="hud">
+        STATUS: <span id="status-text" style="color: #00ff00;">SCANNING AREA</span>
+    </div>
+
+    <!-- Scope Overlay -->
+    <div id="scope-overlay">
+        <div id="reticle" class="reticle">
+            <div id="laser-dot"></div>
+        </div>
+    </div>
+
+    <!-- Permission Start Overlay -->
+    <div id="start-overlay">
+        <h2>SNIPER AR MISSION</h2>
+        <p style="margin-top:10px; color:#aaa;">Rotate your device to scan for target hidden behind cover.</p>
+        <button id="start-btn">ENABLE CAMERA & GYRO</button>
+    </div>
+
+    <script>
+        let scene, camera, renderer;
+        let targetMesh, coverMesh;
+        let raycaster, centerVector;
+        let isGyroAllowed = false;
+
+        // Custom Gyroscope Control State
+        let deviceOrientation = {};
+        
+        const statusText = document.getElementById('status-text');
+        const reticle = document.getElementById('reticle');
+        const laserDot = document.getElementById('laser-dot');
+        const startOverlay = document.getElementById('start-overlay');
+        const startBtn = document.getElementById('start-btn');
+
+        // Initialize Application
+        startBtn.addEventListener('click', async () => {
+            await requestPermissions();
+            initCamera();
+            initThreeJS();
+            startOverlay.style.display = 'none';
+        });
+
+        // 1. Camera Initialization
+        async function initCamera() {
+            const video = document.getElementById('camera-feed');
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: { exact: "environment" } },
+                    audio: false
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                console.warn("Rear camera fallback to standard camera:", err);
+                try {
+                    const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                    video.srcObject = fallbackStream;
+                } catch (e) {
+                    alert("Camera access denied or unavailable.");
+                }
+            }
+        }
+
+        // 2. Motion & Orientation Permissions
+        async function requestPermissions() {
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                try {
+                    const response = await DeviceOrientationEvent.requestPermission();
+                    if (response === 'granted') {
+                        window.addEventListener('deviceorientation', onDeviceOrientation, true);
+                        isGyroAllowed = true;
+                    }
+                } catch (e) {
+                    console.error("DeviceOrientation permission error:", e);
+                }
+            } else {
+                window.addEventListener('deviceorientation', onDeviceOrientation, true);
+                isGyroAllowed = true;
+            }
+        }
+
+        function onDeviceOrientation(event) {
+            deviceOrientation.alpha = event.alpha ? THREE.MathUtils.degToRad(event.alpha) : 0; // Z-axis
+            deviceOrientation.beta = event.beta ? THREE.MathUtils.degToRad(event.beta) : 0;   // X-axis
+            deviceOrientation.gamma = event.gamma ? THREE.MathUtils.degToRad(event.gamma) : 0; // Y-axis
+        }
+
+        // 3. Three.js Scene Setup
+        function initThreeJS() {
+            const container = document.getElementById('canvas-container');
+
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+            renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.appendChild(renderer.domElement);
+
+            // Lighting
+            const light = new THREE.AmbientLight(0xffffff, 1.5);
+            scene.add(light);
+
+            // Target (Spherical Drone Object)
+            const targetGeo = new THREE.SphereGeometry(1, 16, 16);
+            const targetMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, wireframe: true });
+            targetMesh = new THREE.Mesh(targetGeo, targetMat);
+            targetMesh.position.set(0, 0, -8); // Positioned 8 units in front
+            scene.add(targetMesh);
+
+            // Virtual Cover (Bush/Obstacle) hiding target partially
+            const coverGeo = new THREE.BoxGeometry(2.5, 3, 0.5);
+            const coverMat = new THREE.MeshBasicMaterial({ color: 0x115511, opacity: 0.85, transparent: true });
+            coverMesh = new THREE.Mesh(coverGeo, coverMat);
+            coverMesh.position.set(0.8, -0.2, -7); // Placed slightly in front of the target
+            scene.add(coverMesh);
+
+            // Raycasting for Center Aim Target Detection
+            raycaster = new THREE.Raycaster();
+            centerVector = new THREE.Vector2(0, 0); // Screen Center (0,0)
+
+            window.addEventListener('resize', onWindowResize);
+
+            animate();
+        }
+
+        // 4. Gyroscope Camera Rotation Matrix Update
+        function updateCameraRotation() {
+            if (!isGyroAllowed || deviceOrientation.alpha === undefined) return;
+
+            const alpha = deviceOrientation.alpha; 
+            const beta = deviceOrientation.beta;   
+            const gamma = deviceOrientation.gamma; 
+
+            // Convert Euler angles to Camera Quaternion orientation
+            const euler = new THREE.Euler();
+            euler.set(beta, alpha, -gamma, 'YXZ');
+            camera.quaternion.setFromEuler(euler);
+        }
+
+        // 5. Main Render Loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            updateCameraRotation();
+
+            // Rotate Target Slowly
+            if (targetMesh) {
+                targetMesh.rotation.y += 0.01;
+            }
+
+            // Perform Center Scope Aim Check (Raycasting)
+            raycaster.setFromCamera(centerVector, camera);
+            const intersects = raycaster.intersectObjects([targetMesh, coverMesh]);
+
+            if (intersects.length > 0) {
+                // Check if the FIRST hit object is the Target (Not hidden behind cover)
+                if (intersects[0].object === targetMesh) {
+                    reticle.classList.add('locked');
+                    laserDot.classList.add('active');
+                    statusText.innerText = "TARGET LOCKED!";
+                    statusText.style.color = "#ff3333";
+
+                    // Haptic Feedback when aim locks
+                    if (navigator.vibrate) navigator.vibrate(40);
+                } else {
+                    // Hit Obstacle/Cover instead
+                    reticle.classList.remove('locked');
+                    laserDot.classList.remove('active');
+                    statusText.innerText = "TARGET OBSTRUCTED";
+                    statusText.style.color = "#ffcc00";
+                }
+            } else {
+                reticle.classList.remove('locked');
+                laserDot.classList.remove('active');
+                statusText.innerText = "SCANNING AREA";
+                statusText.style.color = "#00ff00";
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    </script>
+</body>
+</html>
